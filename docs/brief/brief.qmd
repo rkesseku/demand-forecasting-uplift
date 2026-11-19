@@ -1,4 +1,6 @@
 ---
+bibliography: references.bib
+bibliographystyle: apa
 linkcolor: "#1f4e9e"
 format:
   typst:
@@ -12,6 +14,8 @@ format:
 
 ```{=typst}
 #set text(hyphenate: false)
+#set bibliography(title: "References")
+#show bibliography: set par(justify: false)
 // Three-rule tables (top, below header, bottom) and bold "Figure N" / "Table N" labels
 #set table.hline(stroke: 0.6pt)
 #show table: it => box(stroke: (top: 1pt, bottom: 1pt), it)
@@ -25,6 +29,7 @@ format:
 #let glance(body) = block(fill: rgb("#eef3fb"), stroke: (left: 3pt + rgb("#1f4e9e")), inset: 10pt, radius: 2pt, width: 100%, body)
 // Header: red title, subtitle, author, repository link
 #align(center)[
+  #set par(justify: false)
   #text(size: 17pt, weight: "bold", fill: rgb("#b91c1c"))[Demand Forecasting and Causal Promotion Uplift]
   #v(0.5em)
   #text(size: 12pt, weight: "bold")[Forecast what will sell, then measure what a promotion actually caused]
@@ -32,6 +37,8 @@ format:
   #text(size: 11pt)[Reagan Kesseku, Ph.D.]
   #linebreak()
   #text(size: 10pt)[#link("https://github.com/rkesseku/demand-forecasting-uplift")[github.com/rkesseku/demand-forecasting-uplift]]
+  #v(0.45em)
+  #text(size: 9.5pt)[#emph[Keywords:] demand forecasting; causal inference; double machine learning; uplift modelling; promotion effects]
 ]
 #v(0.5em)
 ```
@@ -78,7 +85,7 @@ Each series is a store and product pair, observed daily. Demand without promotio
 
 ## Forecasting
 
-Five models plus an ensemble are compared: a weekly seasonal naive baseline, AutoETS, AutoARIMA with promo, price, holiday and yearly Fourier regressors, Prophet with the same regressors, and one global XGBoost model trained across all series.
+Five models plus an ensemble are compared: a weekly seasonal naive baseline, AutoETS, AutoARIMA [@hyndman2008] with promo, price, holiday and yearly Fourier regressors, Prophet [@taylor2018] with the same regressors, and one global XGBoost [@chen2016xgboost] model trained across all series.
 
 * **Leakage-safe features.** Gradient boosting is only honest if the features cannot peek at the future. For a forecast horizon of *h* days, every feature built from past sales is shifted by at least *h* days. A test perturbs all future sales and checks that features up to the forecast origin do not change.
 * **Rolling-origin backtest.** Four forecast origins, 28 days apart, with a 14-day horizon.
@@ -90,10 +97,10 @@ Five models plus an ensemble are compared: a weekly seasonal naive baseline, Aut
 The target is the average treatment effect (ATE): extra units sold per promo day. Assuming that, once store, product, calendar, price, holiday and trend are accounted for, promotion is as good as random (true by construction here), the estimators run from simple to modern:
 
 * **Naive difference and regression adjustment.** The first ignores confounding; the second adjusts linearly, which is the wrong shape for this nonlinear data.
-* **Double machine learning (DML).** Flexible models predict both sales and the chance of promotion from the covariates; the effect is then estimated from what is left over in each. Constant-effect and varying-effect versions are both run.
-* **Doubly robust estimators.** EconML's DR learner and a small hand-written cross-fitted AIPW estimator. They stay consistent if either the outcome model or the promotion model is good.
-* **Heterogeneous effects (CATE).** T-learner, X-learner and a causal forest estimate a different effect for each row. They are evaluated out of sample against the known true effects, with a calibration table and an uplift curve showing the incremental units gained by targeting only the top-scoring promo days.
-* **DoWhy refutation.** An explicit causal graph, backdoor identification, estimation and three stress tests (placebo treatment, random common cause, data subset).
+* **Double machine learning (DML).** Following @chernozhukov2018, flexible models predict both sales and the chance of promotion from the covariates; the effect is then estimated from what is left over in each. Constant-effect and varying-effect versions are both run.
+* **Doubly robust estimators.** EconML's DR learner [@econml] and a small hand-written cross-fitted AIPW estimator [@robins1994]. They stay consistent if either the outcome model or the promotion model is good.
+* **Heterogeneous effects (CATE).** T-learner, X-learner [@kunzel2019] and a causal forest [@wager2018] estimate a different effect for each row. They are evaluated out of sample against the known true effects, with a calibration table and an uplift curve showing the incremental units gained by targeting only the top-scoring promo days.
+* **DoWhy refutation** [@sharma2020dowhy]**.** An explicit causal graph, backdoor identification, estimation and three stress tests (placebo treatment, random common cause, data subset).
 
 # Results
 
