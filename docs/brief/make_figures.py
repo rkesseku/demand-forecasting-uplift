@@ -1,6 +1,7 @@
 """Builds the architecture and confounding diagrams for brief.qmd.
-Other figures (backtest_metrics, causal_estimates, cate_diagnostics) are copies of ../*.png
-produced by `python -m demand_uplift report --seed 42`."""
+Other figures: backtest_metrics and cate_diagnostics are copies of ../*.png
+produced by `python -m demand_uplift report --seed 42`; coverage_study is a copy of
+../results/coverage_study.png from `python -m demand_uplift coverage`."""
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt

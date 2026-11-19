@@ -146,6 +146,54 @@ def fig_causal(res: CausalResults, path_est: Path, path_cate: Path) -> None:
     plt.close(fig)
 
 
+ML_METHODS = ("LinearDML", "LinearDML-het", "DRLearner", "CausalForestDML", "AIPW")
+MODE_LABEL = {"fixed": "fixed budget (<=100 rounds)", "es": "early stopping (<=1000 rounds)"}
+
+
+def fig_coverage(summary: pd.DataFrame, raw: pd.DataFrame, path: Path) -> None:
+    """Left: empirical 95% CI coverage of the true ATE (Wilson 95% band) per estimator and
+    nuisance setting. Right: per-seed relative error of the ML estimators."""
+    methods = list(dict.fromkeys(summary["method"]))[::-1]
+    modes = list(dict.fromkeys(summary["nuisance"]))
+    off = np.linspace(-0.18, 0.18, len(modes)) if len(modes) > 1 else [0.0]
+    colors = ["tab:blue", "tab:orange", "tab:green"]
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
+    ax = axes[0]
+    for k, mode in enumerate(modes):
+        s = summary[summary["nuisance"] == mode].set_index("method").reindex(methods)
+        y = np.arange(len(methods)) + off[k]
+        ax.errorbar(s["coverage_ate"], y,
+                    xerr=[(s["coverage_ate"] - s["coverage_ate_lo"]).clip(lower=0),
+                          (s["coverage_ate_hi"] - s["coverage_ate"]).clip(lower=0)],
+                    fmt="o", capsize=3, color=colors[k % 3], label=MODE_LABEL.get(mode, mode))
+    ax.axvline(0.95, color="black", ls="--", lw=0.8, label="nominal 95%")
+    ax.set_yticks(np.arange(len(methods)))
+    ax.set_yticklabels(methods)
+    ax.set_xlim(-0.03, 1.03)
+    n = int(summary["n_seeds"].max())
+    ax.set_xlabel(f"share of {n} seeds whose 95% CI covers the true ATE")
+    ax.set_title("CI coverage (bars: Wilson 95% interval)")
+    ax.legend(fontsize=7.5, loc="lower right")
+    ax = axes[1]
+    ml = [m for m in methods if m in ML_METHODS]
+    for k, mode in enumerate(modes):
+        g = raw[raw["nuisance"] == mode]
+        for i, m in enumerate(ml):
+            r = g[g["method"] == m]
+            rel = 100 * (r["estimate"] - r["true_ate"]) / r["true_ate"]
+            jitter = np.random.default_rng(i).uniform(-0.06, 0.06, len(rel))
+            ax.scatter(rel, i + off[k] + jitter, s=7, alpha=0.5, color=colors[k % 3])
+            ax.plot([rel.mean()] * 2, [i + off[k] - 0.12, i + off[k] + 0.12], color="black", lw=2)
+    ax.axvline(0, color="red", ls="--", lw=0.8)
+    ax.set_yticks(np.arange(len(ml)))
+    ax.set_yticklabels(ml)
+    ax.set_xlabel("estimate vs true ATE (%), one dot per seed; bar = mean")
+    ax.set_title("Bias across data seeds")
+    fig.tight_layout()
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+
+
 # ---------------------------------------------------------------------------- report
 def write_report(
     out_dir: Path,
@@ -219,6 +267,8 @@ def write_report(
     payload = {"meta": meta}
     if bt is not None:
         payload["backtest_summary"] = bt.summary.to_dict(orient="records")
+        payload["xgb_early_stopping"] = bt.config.xgb_early_stopping
+        payload["xgb_trees"] = bt.xgb_trees
     if ca is not None:
         payload["truth"] = ca.truth
         payload["estimates"] = ca.estimates.to_dict(orient="records")

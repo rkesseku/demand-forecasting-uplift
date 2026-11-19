@@ -15,6 +15,7 @@ format:
 ```{=typst}
 #set text(hyphenate: false)
 #set bibliography(title: "References")
+#show cite: set text(fill: rgb("#1f4e9e"))
 #show bibliography: set par(justify: false)
 // Three-rule tables (top, below header, bottom) and bold "Figure N" / "Table N" labels
 #set table.hline(stroke: 0.6pt)
@@ -48,7 +49,7 @@ format:
 *At a glance* \
 *Problem:* Retail teams need to know how much they will sell and what a promotion truly added, but promotions are scheduled when demand is already high, so simple promo versus non-promo comparisons overstate their impact. \
 *What I built:* A Python package that (1) forecasts daily demand with Prophet, AutoARIMA, AutoETS and XGBoost under rolling-origin backtesting, and (2) estimates causal promotion lift with EconML (DML, doubly robust, causal forest) and DoWhy refutation, all on synthetic data where the true effect is known. \
-*Headline result (seed 42):* The naive comparison says a promotion adds 56.8 units per day; the true figure is 24.0 (a 137% overstatement). Adjusted estimators land within 4% to 8% of the truth, and Prophet is the most accurate forecaster (MASE 0.377 versus 0.956 for the seasonal-naive baseline). \
+*Headline result (seed 42):* The naive comparison says a promotion adds 56.8 units per day; the true figure is 24.0 (a 137% overstatement). Adjusted estimators land within 4% to 8% of the truth, but a 50-seed study shows their 95% intervals almost never contain it; Prophet is the most accurate forecaster (MASE 0.377 versus 0.956 for the seasonal-naive baseline). \
 *Stack:* Python, statsforecast, Prophet, XGBoost, EconML, DoWhy, scikit-learn, pytest, ruff \
 *Repo:* #link("https://github.com/rkesseku/demand-forecasting-uplift")[github.com/rkesseku/demand-forecasting-uplift]
 ]
@@ -75,7 +76,7 @@ The package has one generator and two tracks that share it: a forecasting track 
 
 ![Architecture: one synthetic data generator feeds a forecasting track (top) and a causal track (bottom); both end in a generated report.](figures/architecture.png){#fig-arch width=80%}
 
-The source is about 1,270 lines across six modules (`data.py`, `features.py`, `forecast.py`, `causal.py`, `report.py`, `cli.py`) plus a pytest suite of 22 tests. Running `python -m demand_uplift report --seed 42` reproduces the whole analysis from one seed.
+The source is about 1,560 lines across six modules (`data.py`, `features.py`, `forecast.py`, `causal.py`, `report.py`, `cli.py`) plus a pytest suite of 28 tests. Running `python -m demand_uplift report --seed 42` reproduces the whole analysis from one seed.
 
 ## The synthetic data
 
@@ -91,6 +92,7 @@ Five models plus an ensemble are compared: a weekly seasonal naive baseline, Aut
 * **Rolling-origin backtest.** Four forecast origins, 28 days apart, with a 14-day horizon.
 * **Scale-free metrics.** MASE divides the error by that of an in-sample seasonal-naive forecast, so 1.0 means "no better than last week's pattern" and lower is better.
 * **Uncertainty.** The classical models and Prophet use their native 80% intervals. XGBoost gets conformalised quantile regression: the quantile band is widened by an amount calibrated on a trailing 56-day window.
+* **No hand-picked tree count.** Inside each origin, XGBoost's number of trees is chosen by early stopping on the 28 days just before its training cut-off, then the model is refit on all training data. Nothing after the forecast origin is used.
 
 ## Causal uplift
 
@@ -100,6 +102,7 @@ The target is the average treatment effect (ATE): extra units sold per promo day
 * **Double machine learning (DML).** Following @chernozhukov2018, flexible models predict both sales and the chance of promotion from the covariates; the effect is then estimated from what is left over in each. Constant-effect and varying-effect versions are both run.
 * **Doubly robust estimators.** EconML's DR learner [@econml] and a small hand-written cross-fitted AIPW estimator [@robins1994]. They stay consistent if either the outcome model or the promotion model is good.
 * **Heterogeneous effects (CATE).** T-learner, X-learner [@kunzel2019] and a causal forest [@wager2018] estimate a different effect for each row. They are evaluated out of sample against the known true effects, with a calibration table and an uplift curve showing the incremental units gained by targeting only the top-scoring promo days.
+* **Coverage study.** The estimation is repeated on 50 freshly generated data sets, with the flexible models capped at 100 boosting rounds (default) or early-stopped on held-out data (never tuned on the true effect).
 * **DoWhy refutation** [@sharma2020dowhy]**.** An explicit causal graph, backdoor identification, estimation and three stress tests (placebo treatment, random common cause, data subset).
 
 # Results
@@ -109,25 +112,25 @@ The target is the average treatment effect (ATE): extra units sold per promo day
 
 | Model | MASE | sMAPE (%) | 80% coverage | Mean width |
 |-----------------------------------------|---------|---------------|-------------------|----------------|
-| Prophet | **0.377** | **9.49** | **0.789** | **23.7** |
-| Ensemble | 0.404 | 9.90 | 0.866 | 34.4 |
-| XGBoost | 0.419 | 10.46 | 0.774 | 33.6 |
-| AutoARIMA (with regressors) | 0.437 | 11.06 | 0.845 | 32.2 |
+| Prophet | **0.377** | **9.49** | **0.783** | **23.6** |
+| Ensemble | 0.409 | 10.03 | 0.875 | 32.8 |
+| XGBoost | 0.428 | 10.76 | 0.768 | 27.2 |
+| AutoARIMA (with regressors) | 0.438 | 11.07 | 0.842 | 32.2 |
 | AutoETS | 0.774 | 19.39 | 0.771 | 48.2 |
 | SeasonalNaive | 0.956 | 23.55 | 0.872 | 82.8 |
 
 : Seed-42 synthetic data (full report in docs/sample_report.md). Backtest: 4 rolling origins, 14-day horizon, 6 series, nominal 80% intervals. Bold marks the best value in each column: lowest error, coverage closest to 0.80 and narrowest interval. {#tbl-bt}
 
-The three models that see the promo and price regressors (Prophet, AutoARIMA, XGBoost) cut error by more than half relative to the seasonal-naive baseline, and by about 45% relative to AutoETS, which cannot use them. With four origins and six series (336 held-out points per model) the ranking among the top three is not statistically conclusive.
+The three models that see the promo and price regressors (Prophet, AutoARIMA, XGBoost) cut error by more than half relative to the seasonal-naive baseline, and by about 45% relative to AutoETS, which cannot use them. With four origins and six series (336 held-out points per model) the ranking among the top three is not statistically conclusive. Early stopping chose 485 to 712 XGBoost trees instead of a fixed 300; MASE moved only from 0.429 to 0.428 (no more than changing the CPU thread count moves it), and intervals became about 20% narrower.
 
 
 ## Causal estimates
 
 The true ATE is 23.989 units per promo day; the weighted average that constant-effect DML targets is 28.585.
 
-As Table 2 and Figure 3 show, the naive contrast overstates the effect by about 137%. The heterogeneity-aware, doubly robust estimators (LinearDML-het, AIPW, DRLearner) land within 4% to 8% of the truth. Constant-effect LinearDML sits near 28.6, the weighted average it targets, a reminder that "the DML coefficient" is not the ATE when effects vary.
+As Table 2 shows, the naive contrast overstates the effect by about 137%. The heterogeneity-aware, doubly robust estimators (LinearDML-het, AIPW, DRLearner) land within 4% to 8% of the truth. Constant-effect LinearDML sits near 28.6, the weighted average it targets, a reminder that "the DML coefficient" is not the ATE when effects vary.
 
-**An honest note on the confidence intervals.** Six of the seven 95% intervals miss the true value, including those of the best estimators. This is not an arithmetic bug. Those intervals only account for random sampling noise. The remaining error of one to two units comes from the flexible models that predict sales and promotion being imperfect in a finite sample, and the interval formulas do not include that error. Only the causal forest, whose interval is much wider, covers the truth. In practice the intervals should be read as a lower bound on uncertainty. Rows are also treated as independent, whereas real promo data has serial correlation and would need clustered errors.
+**An honest note on the confidence intervals.** Six of the seven 95% intervals above miss the true value. One data set cannot tell whether that is bad luck, so the estimation was repeated on 50 freshly generated data sets (Table 3, Figure 3). With the default models, LinearDML, LinearDML-het, DRLearner and AIPW never covered the truth in 50 tries, and they overestimated it every time. Letting the sales and promotion models train longer, with early stopping on held-out data, cut the bias of the doubly robust estimators by 64% to 81% (DRLearner from +2.6 to +0.5 units), but their coverage only rose to 8% to 14%: the remaining bias is still three to four standard errors. The causal forest covers 90% to 100% of the time only because its interval is more than ten times wider; it is more biased than the doubly robust estimators. The other intervals should be read as a lower bound on uncertainty.
 
 | Method | Estimate | 95% CI | Bias | CI covers true ATE |
 |-----------------------------------------|-------------|----------------------|----------|-------------|
@@ -139,37 +142,47 @@ As Table 2 and Figure 3 show, the naive contrast overstates the effect by about 
 | CausalForestDML | 28.09 | [23.71, 32.48] | +4.10 | **yes** |
 | AIPW (own, cross-fitted) | 25.42 | [25.09, 25.76] | +1.43 | no |
 
-: Causal estimates against the known truth of 23.989. Bold marks the estimate closest to the truth and the only interval that covers it. {#tbl-causal}
+: Causal estimates on the seed-42 data set against the known truth of 23.989 (default models). Bold marks the estimate closest to the truth and the only interval that covers it. {#tbl-causal}
 
-![Point estimates and 95% intervals for each method. Red dashed line: true ATE; orange dotted line: the weighted effect constant-effect DML targets.](figures/causal_estimates.png){#fig-causal width=62%}
+| Method | Bias, default | Bias, early stop | Coverage, default | Coverage, early stop |
+|-----------------------------|---------------|------------------|-------------------|-------------------|
+| LinearDML (constant effect) | +5.58 | +4.38 | 0.00 [0.00, 0.07] | 0.00 [0.00, 0.07] |
+| LinearDML-het | **+2.04** | +1.05 | 0.00 [0.00, 0.07] | 0.08 [0.03, 0.19] |
+| DRLearner | +2.59 | **+0.50** | 0.00 [0.00, 0.07] | 0.14 [0.07, 0.26] |
+| CausalForestDML | +4.27 | +3.14 | **0.90 [0.79, 0.96]** | **1.00 [0.93, 1.00]** |
+| AIPW (own, cross-fitted) | +2.03 | +0.73 | 0.00 [0.00, 0.07] | 0.08 [0.03, 0.19] |
+
+: Over 50 generated data sets (seeds 42 to 91): mean bias in units per promo day and the share of data sets whose 95% interval contains the true ATE, with a Wilson 95% interval for that share. "Default": at most 100 boosting rounds; "early stop": up to 1,000, stopped on held-out data. Bold: smallest bias, and coverage closest to 0.95, per column. Naive and regression never cover. {#tbl-cov}
+
+![Coverage study over 50 data sets. Left: share of 95% intervals that contain the true ATE, with Wilson 95% bands; dashed line at 0.95. Right: each data set's error as a percentage of its true ATE.](figures/coverage_study.png){#fig-cov width=68%}
 
 ## Who benefits most
 
 The X-learner recovers the row-level effect best (correlation 0.949 with the truth, calibration slope 0.934), ahead of the T-learner (0.898) and the causal forest (0.806, slope 1.236). In the decile table the estimated effect tracks the true one (lowest decile: 9.4 estimated versus 8.7 true; highest: 59.1 versus 55.8), with a small upward offset consistent with the ATE bias. Targeting promo days by X-learner score nearly matches an oracle that knows the true effect.
 
-![Out-of-sample X-learner effects versus truth (left), calibration by decile (centre), and the uplift curve against random and oracle targeting (right).](figures/cate_diagnostics.png){#fig-cate width=82%}
+![Out-of-sample X-learner effects versus truth (left), calibration by decile (centre), and the uplift curve against random and oracle targeting (right).](figures/cate_diagnostics.png){#fig-cate width=68%}
 
 ## DoWhy refutation
 
-On a 6,000-row subsample the placebo refuter (permuted promotion) gives an effect of 0.087 (p = 0.466), and neither the random-common-cause refuter (p = 0.159) nor the 80% data-subset refuter (p = 0.310) rejects. Refuters cannot detect unobserved confounding; here it is ruled out only because the generator is known. DoWhy's default propensity-stratification estimate (35.48) uses a logistic propensity model and is shown as an illustration, not as a competitive estimator.
+On a 6,000-row subsample the placebo refuter (permuted promotion) gives an effect of 0.087 (p = 0.466), and neither the random-common-cause refuter (p = 0.159) nor the 80% data-subset refuter (p = 0.310) rejects. Refuters cannot detect unobserved confounding; here it is ruled out only because the generator is known. DoWhy's default stratification estimate (35.48) is an illustration, not a competitive estimator.
 
 # What this demonstrates
 
 * **Causal reasoning, not just prediction.** Recognising confounding, stating the estimand and its identifying assumption, and choosing estimators accordingly, including the weighted-versus-average-effect subtlety.
-* **Verifiability by design.** A generator with a known truth turns causal claims into testable ones. Forecasts are validated the same way, through leakage tests and a rolling-origin backtest.
-* **Honest reporting.** Intervals that fail to cover are reported and explained, small-sample caveats are stated, and rankings that are not significant are not presented as wins.
-* **Engineering hygiene.** A single-seed reproducible pipeline, a command-line interface, 22 tests (data, features, forecasting, causal, CLI), lint with ruff and a CI workflow.
+* **Verifiability by design.** A generator with a known truth turns causal claims into testable ones; forecasts get leakage tests and a rolling-origin backtest.
+* **Honest reporting.** Interval coverage is tested over 50 data sets rather than asserted, and rankings that are not significant are not presented as wins.
+* **Engineering hygiene.** A seed-reproducible pipeline, a command-line interface, 28 tests (data, features, forecasting, causal, CLI), lint with ruff and a CI workflow.
 
 # Limitations and next steps
 
 **Limitations.**
 
-* The data are synthetic, and unconfoundedness holds by construction (with real data it would have to be argued). The point is a verifiable truth, not realism. Real data add stock-outs (censored demand), cannibalisation between products, consecutive promo days and unobserved confounders, none of which are modelled.
-* The backtest uses 4 origins and 6 series for speed, so coverage figures are noisy and the top-three forecast ranking is not conclusive.
-* Parametric confidence intervals under-cover because they ignore nuisance-model error; standard errors assume independent rows.
-* All reported results come from a single seed (42); variation across seeds is not reported.
+* The data are synthetic, and unconfoundedness holds by construction. The point is a verifiable truth, not realism. Real data add stock-outs (censored demand), cannibalisation between products, consecutive promo days and unobserved confounders, none of which are modelled.
+* The backtest uses 4 origins and 6 series of one seed, so forecast coverage is noisy and the top-three ranking is not conclusive.
+* The intervals of the efficient causal estimators under-cover badly across 50 data sets, even with better-trained nuisance models; standard errors also assume independent rows, whereas real promo data is serially correlated.
+* Only the ATE estimators were repeated across seeds; the CATE diagnostics are from seed 42.
 
-**Next steps.** Repeat the study over many seeds to report bias and coverage as distributions; add clustered standard errors and a bootstrap that includes the nuisance models; add censoring, cannibalisation and a hidden confounder to the generator to test sensitivity analysis; widen the backtest (more origins and series); and try the pipeline on a public retail data set.
+**Next steps.** Tune the nuisance models further by held-out loss and test whether bootstrap or bias-corrected intervals reach 95% coverage; add clustered standard errors; add censoring, cannibalisation and a hidden confounder to the generator; widen the backtest; and try a public retail data set.
 
 # How to run it
 
@@ -185,4 +198,4 @@ pytest -q
 ]
 ```
 
-The `generate`, `backtest` and `causal` subcommands run each stage alone. The report writes `report.md`, `results.json` and the figures into the output folder, and the seed-42 run is saved in `docs/sample_report.md`. This brief's two diagrams are rebuilt by `docs/brief/make_figures.py`; the other three figures are copies of the report's output.
+The `generate`, `backtest` and `causal` subcommands run each stage alone. The report writes `report.md`, `results.json` and the figures into the output folder, and the seed-42 run is saved in `docs/sample_report.md`. The `coverage` subcommand reruns the 50-seed study (hours; results in `docs/results/`). This brief's two diagrams are rebuilt by `docs/brief/make_figures.py`; the coverage figure is copied from `docs/results/` and the other two from the report output.

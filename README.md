@@ -22,10 +22,12 @@ src/demand_uplift/
   forecast.py   SeasonalNaive, AutoETS, AutoARIMA (+exog), Prophet, XGBoost (+CQR intervals),
                 Ensemble; rolling-origin backtest; MASE, sMAPE, interval coverage
   causal.py     naive, regression adjustment, EconML DML / DR / causal forest, own cross-fitted
-                AIPW, T-/X-learner CATE, calibration + uplift curve, DoWhy graph/identify/refute
+                AIPW, T-/X-learner CATE, calibration + uplift curve, DoWhy graph/identify/refute,
+                multi-seed coverage study of the ATE estimators
   report.py     Markdown report + matplotlib figures
-  cli.py        python -m demand_uplift {generate,backtest,causal,report}
-tests/          pytest suite (fast; ~40 s on a quiet laptop)
+  cli.py        python -m demand_uplift {generate,backtest,causal,coverage,report}
+tests/          pytest suite (CPU only, tiny synthetic panels)
+docs/results/   multi-seed coverage study and XGBoost early-stopping comparison (JSON + figure)
 ```
 
 **Libraries used.** Forecasting: [statsforecast](https://github.com/Nixtla/statsforecast) (SeasonalNaive, AutoETS, AutoARIMA with exogenous regressors), [Prophet](https://facebook.github.io/prophet/), [XGBoost](https://xgboost.readthedocs.io/). Causal: [DoWhy](https://github.com/py-why/dowhy) (explicit causal graph, backdoor identification, estimation, refutation tests) and [EconML](https://github.com/py-why/EconML) (`LinearDML`, `CausalForestDML`, `LinearDRLearner`, `TLearner`, `XLearner`). Hand-written code is kept only where it adds value: the naive baseline, a small cross-fitted AIPW estimator (used as an independent cross-check and to produce the doubly-robust scores behind the uplift and calibration diagnostics), and the backtest/metrics/report plumbing.
@@ -49,6 +51,7 @@ Promotions are more likely when expected demand is high and in some stores, so t
 
 * **Baselines and classical:** weekly seasonal naive; AutoETS (m=7); AutoARIMA with promo, log-price, holiday and yearly Fourier regressors (a SARIMAX-style model); Prophet with the same regressors.
 * **Global gradient boosting:** one XGBoost model across all series, fit on `log1p(units)`. Features are calendar terms, store/product codes, future-known covariates (planned promo, price, holiday) and target lags/rolling statistics. For forecast horizon *h*, every target-derived feature is shifted by **at least h days**: `lag_h, lag_{h+7}, lag_{h+14}, lag_{h+28}, lag_364`, and rolling mean/std computed on `y` shifted by *h*. A row at date *t* therefore never sees `y` after `t-h`, so one direct prediction per horizon step is leak-free. A test perturbs all future targets and asserts features of rows up to `origin + h` do not change.
+* **XGBoost tree count:** chosen by early stopping inside each rolling origin. The model is first trained on data up to 28 days before its training cut-off, with early stopping (patience 50, at most 2,000 trees) on those last 28 days, then refit on all training rows with the selected count. Only data dated before the forecast origin is used (a test scrambles every target after the origin and checks the forecast is unchanged). `--no-xgb-es` restores the original fixed 300 trees.
 * **Intervals:** classical models and Prophet use their native 80% intervals. XGBoost uses 10%/90% quantile models, then **conformalised quantile regression**: with calibration scores `E_i = max(lo_i - y_i, y_i - hi_i)` on a trailing 56-day window, the interval is widened by the `ceil((n+1)(1-alpha))/n` empirical quantile of `E`.
 * **Ensemble:** mean of AutoETS, AutoARIMA, Prophet and XGBoost point forecasts and interval bounds.
 * **Backtest:** rolling origin (4 origins, 28-day step, 14-day horizon). Metrics: `MASE = MAE / MAE_in-sample seasonal-naive(m=7)`, `sMAPE = 100 * mean(2|y-yhat| / (|y|+|yhat|))`, empirical coverage and mean width of the nominal 80% interval. The per-series models are scored on a fixed set of 6 series; XGBoost is trained globally on all series and scored on the same 6.
@@ -63,6 +66,8 @@ Estimand: average treatment effect `ATE = E[Y(1) - Y(0)]` in units per promo-day
 * **AIPW / doubly robust:** cross-fitted `psi = mu1(X) - mu0(X) + D(Y - mu1)/e - (1-D)(Y - mu0)/(1-e)` (propensity clipped to [0.02, 0.98]); `ATE = mean(psi)`, CI from the influence function `std(psi)/sqrt(n)`. EconML's `LinearDRLearner` is run alongside.
 * **CATE:** T-learner (`mu1 - mu0`), X-learner (imputed effects blended by the propensity), `CausalForestDML`. CATEs are predicted **out of sample** (2-fold cross-fitting) and compared with the known `true_tau` (correlation, RMSE).
 * **Calibration and uplift curve:** predicted-CATE deciles vs. the mean doubly-robust score (and the true mean effect) per decile; a best-linear-predictor slope of DR scores on predicted CATE (1 = calibrated); an uplift curve of cumulative incremental units when targeting the top-q fraction by predicted CATE, against random targeting and an oracle that sorts by `true_tau`.
+* **Nuisance models:** scikit-learn histogram gradient boosting (learning rate 0.1, 15 leaves). `--nuisance fixed` (default, used for the seed-42 tables) caps each model at `--iters 100` rounds; `--nuisance es` raises the cap to 1,000 rounds and early-stops on a 10% validation split of each training fold. Both choices are made by held-out nuisance loss, never by closeness to the true ATE.
+* **Coverage study:** `coverage` re-generates the synthetic panel for many data seeds, runs every ATE estimator on each, and reports mean bias, RMSE, empirical 95% CI coverage of each seed's true ATE with a Wilson interval on that coverage, and mean CI width.
 * **DoWhy:** an explicit causal graph (store, product, dow, yearly Fourier terms, holiday, log price, trend -> promo and -> demand; promo -> demand), backdoor identification, estimation through the identified estimand (propensity-score stratification and DML via DoWhy's EconML bridge), and three refuters (placebo treatment, random common cause, data subset).
 
 ## Quick start
@@ -79,13 +84,16 @@ python -m demand_uplift generate --seed 42 --out output
 # forecast backtest only / causal analysis only / everything + report + figures
 python -m demand_uplift backtest --seed 42 --out output
 python -m demand_uplift causal   --seed 42 --out output
-python -m demand_uplift report   --seed 42 --out output     # ~3-5 min on a laptop
+python -m demand_uplift report   --seed 42 --out output     # ~3-5 min on a quiet laptop
+
+# ATE bias / coverage over 50 data seeds, fixed vs early-stopped nuisances (hours; see below)
+python -m demand_uplift coverage --seed 42 --n-seeds 50 --modes fixed,es --out output
 
 pytest -q
 ruff check src tests
 ```
 
-`report` writes `report.md`, `results.json` and PNG figures into `--out`. Useful flags: `--stores/--products/--days`, `--models SeasonalNaive,AutoETS,AutoARIMA_x,Prophet,XGBoost`, `--origins`, `--series`, `--folds`, `--iters`, `--trees`, `--no-dowhy`. A console script `demand-uplift` is installed too.
+`report` writes `report.md`, `results.json` and PNG figures into `--out`. Useful flags: `--stores/--products/--days`, `--models SeasonalNaive,AutoETS,AutoARIMA_x,Prophet,XGBoost`, `--origins`, `--series`, `--no-xgb-es`, `--folds`, `--iters`, `--trees`, `--nuisance {fixed,es}`, `--no-dowhy`. `coverage` also takes `--n-seeds`, `--modes`, `--jobs`, `--resume` (skip seeds already in `coverage_raw.csv`) and `--from-raw` (only summarise finished runs). A console script `demand-uplift` is installed too.
 
 ## Results
 
@@ -95,14 +103,25 @@ All numbers below were produced by `python -m demand_uplift report --seed 42` on
 
 | model | MASE | sMAPE (%) | 80% coverage | mean width |
 |---|---|---|---|---|
-| Prophet | 0.377 | 9.493 | 0.789 | 23.689 |
-| Ensemble | 0.404 | 9.902 | 0.866 | 34.419 |
-| XGBoost | 0.419 | 10.460 | 0.774 | 33.574 |
-| AutoARIMA_x | 0.437 | 11.061 | 0.845 | 32.174 |
+| Prophet | 0.377 | 9.493 | 0.783 | 23.612 |
+| Ensemble | 0.409 | 10.026 | 0.875 | 32.812 |
+| XGBoost | 0.428 | 10.765 | 0.768 | 27.196 |
+| AutoARIMA_x | 0.438 | 11.067 | 0.842 | 32.199 |
 | AutoETS | 0.774 | 19.393 | 0.771 | 48.240 |
 | SeasonalNaive | 0.956 | 23.550 | 0.872 | 82.786 |
 
-Models that see the promo and price regressors (Prophet, AutoARIMA, XGBoost) cut MASE by more than half relative to the seasonal-naive baseline (0.956) and by roughly 45% relative to AutoETS, which cannot use them. Prophet is the most accurate model on this setup; the ensemble over-covers slightly because averaging interval bounds widens them. With only 4 origins x 6 series (336 held-out points per model), the coverage figures are noisy and the ranking between the top three models is not statistically conclusive.
+Models that see the promo and price regressors (Prophet, AutoARIMA, XGBoost) cut MASE by more than half relative to the seasonal-naive baseline (0.956) and by roughly 45% relative to AutoETS, which cannot use them. Prophet is the most accurate model on this setup; the ensemble over-covers slightly because averaging interval bounds widens them. With only 4 origins x 6 series (336 held-out points per model), the coverage figures are noisy and the ranking between the top three models is not statistically conclusive. Prophet's interval coverage also moves between reruns (0.774 to 0.789 in four runs here) because its uncertainty sampling is not seeded.
+
+**XGBoost early stopping** ([`docs/results/xgb_early_stopping.json`](docs/results/xgb_early_stopping.json)). Early stopping picked 485 to 712 trees for the point model (and 630 to 1,111 for the quantile models), more than the old fixed 300, but accuracy barely moved:
+
+| XGBoost run (seed 42) | MASE | sMAPE (%) | 80% coverage | mean width |
+|---|---|---|---|---|
+| fixed 300 trees, 2 threads | 0.429 | 10.711 | 0.780 | 33.534 |
+| early stopping, 2 threads | 0.428 | 10.765 | 0.768 | 27.196 |
+| fixed 300 trees, 1 thread | 0.427 | 10.626 | 0.774 | 33.672 |
+| early stopping, 1 thread | 0.420 | 10.517 | 0.777 | 26.706 |
+
+MASE improves by 0.002 (2 threads) and 0.007 (1 thread), but changing only the thread count moves it by the same 0.002 to 0.007 (XGBoost histogram sums depend on it), and sMAPE moves in opposite directions in the two pairs, so early stopping does not measurably improve point accuracy here. Its intervals are about 20% narrower at similar coverage. The previous README value (MASE 0.419) came from an earlier run with the previous `n_jobs=4` setting and does not reproduce at 2 threads; the main table is the current 2-thread run with early stopping.
 
 ![backtest metrics](docs/backtest_metrics.png)
 
@@ -124,10 +143,41 @@ The ground-truth ATT is 31.607 and the `Var(D|X)`-weighted estimand targeted by 
 
 Reading this honestly:
 
-* The naive contrast overstates the effect by about 137%. Every adjusted method moves the estimate most of the way to the truth. The heterogeneity-aware, doubly-robust estimators (`LinearDML-het`, AIPW, `DRLearner`) land within 4% to 8% of the true ATE.
+* The naive contrast overstates the effect by about 137%. Every adjusted method moves the estimate most of the way to the truth. The heterogeneity-aware, doubly-robust estimators (`LinearDML-het`, AIPW, `DRLearner`) land within 4% to 8% of the true ATE (across 50 data seeds their mean bias is 7.5% to 9.7% with the default nuisances and 1.9% to 3.8% with early-stopped ones; see below).
 * Constant-effect `LinearDML` estimates 29.9, close to the `Var(D|X)`-weighted effect 28.6 it actually targets, not the ATE: with heterogeneous effects, "the DML coefficient" is a weighted average, not the ATE.
-* **The nominal 95% CIs for the parametric estimators do not cover the true ATE.** The remaining bias (about 1 to 2 units) comes from imperfect gradient-boosting nuisance models (the propensity model in particular) in a finite sample. The sandwich and influence-function standard errors only capture sampling noise, not that nuisance error. Only the causal forest, whose interval is much wider, covers. Treat the CIs as lower bounds on uncertainty.
+* On this one seed, only the causal forest's 95% CI covers the true ATE. A single draw cannot establish coverage, so the next section repeats the whole estimation over 50 data seeds; it confirms that the intervals of the other estimators under-cover badly.
 * Standard errors also assume independent rows; real promo data has serial correlation and would need clustered errors.
+* Early-stopped nuisances (`--nuisance es`) are clearly better (next section), but the seed-42 table keeps the default fixed budget so that it stays comparable with earlier versions of this README. With early stopping, seed 42 gives LinearDML-het 24.28, DRLearner 24.39 and AIPW 24.62 (biases +0.29 to +0.63); their CIs still miss the truth.
+
+### Coverage across 50 data seeds
+
+`python -m demand_uplift coverage --seed 42 --n-seeds 50 --modes fixed,es` re-generates the panel for data seeds 42 to 91 (same size as above; the true ATE ranges from 14.4 to 60.9 across seeds) and re-runs every ATE estimator, once with the default nuisance budget and once with early-stopped nuisances. Results: [`docs/results/coverage_study.json`](docs/results/coverage_study.json) (per-seed rows in `coverage_raw.csv`). Coverage is the share of the 50 seeds whose 95% CI contains that seed's true ATE; brackets are Wilson 95% intervals for that share. Naive and regression use no nuisance models, so they are listed once.
+
+| method | nuisances | mean bias | RMSE | 95% CI coverage [Wilson 95%] | mean CI width |
+|---|---|---|---|---|---|
+| naive | none | +33.90 | 35.91 | 0.00 [0.00, 0.07] | 3.69 |
+| regression adjustment | none | +14.32 | 15.36 | 0.00 [0.00, 0.07] | 1.81 |
+| LinearDML (constant effect) | fixed | +5.58 | 5.92 | 0.00 [0.00, 0.07] | 1.08 |
+| | early stopping | +4.38 | 4.66 | 0.00 [0.00, 0.07] | 0.97 |
+| LinearDML-het | fixed | +2.04 | 2.25 | 0.00 [0.00, 0.07] | 0.82 |
+| | early stopping | +1.05 | 1.28 | 0.08 [0.03, 0.19] | 0.72 |
+| DRLearner | fixed | +2.59 | 2.78 | 0.00 [0.00, 0.07] | 0.89 |
+| | early stopping | +0.50 | 0.55 | 0.14 [0.07, 0.26] | 0.65 |
+| CausalForestDML | fixed | +4.27 | 4.51 | 0.90 [0.79, 0.96] | 9.96 |
+| | early stopping | +3.14 | 3.34 | 1.00 [0.93, 1.00] | 9.07 |
+| AIPW (own, cross-fitted) | fixed | +2.03 | 2.17 | 0.00 [0.00, 0.07] | 0.87 |
+| | early stopping | +0.73 | 0.79 | 0.08 [0.03, 0.19] | 0.78 |
+
+![coverage study](docs/results/coverage_study.png)
+
+What this supports:
+
+* **Under-coverage is real, not a seed-42 accident.** With the default budget, none of the 50 intervals of LinearDML, LinearDML-het, DRLearner or AIPW contains the true ATE (coverage 0%, Wilson upper bound 7%). Their bias is positive in every one of the 50 seeds and averages 9 to 12 times the reported standard error (20 times for constant-effect LinearDML). Constant-effect LinearDML also misses the `Var(D|X)`-weighted effect it targets (coverage 2%).
+* **The nuisance budget is a large part of the bias; fixing it helps a lot but not enough.** The default outcome model stops at its 100-round cap (with early stopping it runs to 444 rounds on seed 42). Letting the nuisances early-stop cuts the mean bias of the doubly robust estimators by 64% to 81% (DRLearner +2.59 to +0.50, AIPW +2.03 to +0.73) and their RMSE by a similar share. Coverage only rises to 8% to 14%, far below 95%: the remaining bias is still 3 to 4 standard errors and positive in 49 or 50 of the 50 seeds, and the spread of the errors across seeds is 1.4 to 1.6 times the reported standard error.
+* **The causal forest's coverage is not a sign of accuracy.** It covers in 90% (fixed) and 100% (early stopping) of seeds, yet it is the most biased ML estimator after constant-effect DML (+3.1 to +4.3, 12% to 16% of the ATE). It covers only because its interval is 11 to 14 times wider than the others; its standard error is 1.7 to 2 times the actual spread of its errors.
+* So the nominal intervals of the efficient estimators should not be read as 95% intervals on data like this; treat them as lower bounds on uncertainty. The truth here is each seed's in-sample average effect, for which influence-function standard errors are, if anything, conservative, so that choice is not what drives the under-coverage.
+
+Runtime: one process per nuisance setting, one thread each (`--jobs 1`), on a shared machine: about 150 s per seed with the fixed budget (2.1 h for 50 seeds) and 283 s per seed with early stopping (3.9 h of compute, run as two halves in parallel and merged with `--from-raw`).
 
 ### Heterogeneous effects (out-of-sample CATE)
 
@@ -143,7 +193,7 @@ The X-learner recovers the true CATE best (correlation 0.949). In the decile cal
 
 ### DoWhy refutation (6,000-row subsample)
 
-The graph has 10 nodes; all eight observed covariates are common causes of promo and demand. The backdoor estimand gives 35.480 with propensity-score stratification (a logistic propensity model that cannot capture the nonlinear confounding; included as an illustration of DoWhy's default estimators, not as a competitive estimate) and 31.351 via DoWhy's EconML `LinearDML` bridge on the same subsample.
+The graph has 10 nodes; all eight observed covariates are common causes of promo and demand. The backdoor estimand gives 35.480 with propensity-score stratification (a logistic propensity model that cannot capture the nonlinear confounding; included as an illustration of DoWhy's default estimators, not as a competitive estimate) and 31.137 via DoWhy's EconML `LinearDML` bridge on the same subsample (that bridge is not seeded, so this value varies slightly between runs; an earlier run gave 31.351).
 
 | refuter | new effect | p-value |
 |---|---|---|
@@ -158,6 +208,7 @@ The placebo effect is near zero and no refuter rejects, so the estimate is stabl
 * Synthetic data only. The point is a verifiable ground truth, not realism. Real data would add censoring (stock-outs), cannibalisation and promo-run structure (consecutive promo days), and unobserved confounders.
 * Identification relies on unconfoundedness given the observed covariates, which holds by construction here.
 * The backtest uses a small number of origins and series for speed; increase `--origins` and `--series` for tighter estimates.
+* The coverage study varies the data seed only. Nuisance settings other than the round count (learning rate, leaves) were not tuned, and no bias-corrected or bootstrap interval was tried, so whether any interval method reaches 95% here is still open.
 
 ## License
 

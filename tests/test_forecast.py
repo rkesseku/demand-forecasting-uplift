@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import pytest
 
 from demand_uplift.data import generate
@@ -63,3 +64,30 @@ def test_prophet_smoke(panel):
     res = backtest(panel, cfg)
     assert res.summary.loc[0, "model"] == "Prophet"
     assert np.isfinite(res.summary.loc[0, "mase"])
+
+
+def test_xgb_early_stopping_is_leak_free_and_bounded(panel):
+    from demand_uplift.features import build_features
+    from demand_uplift.forecast import XGB_MAX_TREES, forecast_xgb
+
+    h = 14
+    origin = panel["date"].max() - pd.Timedelta(days=h)
+    info: dict = {}
+    base = forecast_xgb(build_features(panel, h), origin, h, early_stopping=True, info=info)
+    assert 1 <= info["point_trees"] <= XGB_MAX_TREES
+    assert 1 <= info["qlo_trees"] <= XGB_MAX_TREES and 1 <= info["qhi_trees"] <= XGB_MAX_TREES
+    # Scrambling every target after the origin must not change the forecast: neither the
+    # early-stopping window nor the refit may look past the origin.
+    pert = panel.copy()
+    after = pert["date"] > origin
+    pert.loc[after, "units"] = pert.loc[after, "units"].to_numpy()[::-1] * 3 + 50
+    again = forecast_xgb(build_features(pert, h), origin, h, early_stopping=True)
+    assert np.allclose(base["yhat"], again["yhat"])
+    assert np.allclose(base["lo"], again["lo"]) and np.allclose(base["hi"], again["hi"])
+
+
+def test_xgb_fixed_budget_still_available(panel):
+    cfg = BacktestConfig(n_origins=1, n_series=1, models=("XGBoost",), ensemble=False,
+                         xgb_early_stopping=False)
+    res = backtest(panel, cfg)
+    assert res.xgb_trees[0]["point_trees"] == 300

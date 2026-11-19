@@ -1,0 +1,156 @@
+{
+  "description": "Seed-42 rolling-origin backtest (4 origins, 14-day horizon, 6 series). XGBoost with the original fixed 300 trees vs early stopping (<=2000 trees, 50 rounds patience) on the 28 days before each model's training cut-off, then refit on all training rows with the selected tree count.",
+  "full_backtest_2_threads": {
+    "fixed_300_trees": [
+      {
+        "model": "Prophet",
+        "mase": 0.3768321874836326,
+        "smape": 9.493168275469774,
+        "coverage": 0.7767857142857143,
+        "width": 23.85059768101948
+      },
+      {
+        "model": "Ensemble",
+        "mase": 0.4074213379413007,
+        "smape": 9.989001411672719,
+        "coverage": 0.8690476190476191,
+        "width": 34.4558857952312
+      },
+      {
+        "model": "XGBoost",
+        "mase": 0.4293652262831645,
+        "smape": 10.710800430985586,
+        "coverage": 0.7797619047619048,
+        "width": 33.53373045580728
+      },
+      {
+        "model": "AutoARIMA_x",
+        "mase": 0.43801736229407356,
+        "smape": 11.066930605416644,
+        "coverage": 0.8422619047619048,
+        "width": 32.1994177253297
+      },
+      {
+        "model": "AutoETS",
+        "mase": 0.7735836870946655,
+        "smape": 19.393061348300947,
+        "coverage": 0.7708333333333334,
+        "width": 48.239797318768325
+      },
+      {
+        "model": "SeasonalNaive",
+        "mase": 0.9561419737100966,
+        "smape": 23.54958919181489,
+        "coverage": 0.8720238095238094,
+        "width": 82.7862977645829
+      }
+    ],
+    "early_stopping": [
+      {
+        "model": "Prophet",
+        "mase": 0.3768321874836326,
+        "smape": 9.493168275469774,
+        "coverage": 0.7738095238095238,
+        "width": 23.699391459596622
+      },
+      {
+        "model": "Ensemble",
+        "mase": 0.40879747233490277,
+        "smape": 10.025589169495989,
+        "coverage": 0.8720238095238094,
+        "width": 32.83361352929139
+      },
+      {
+        "model": "XGBoost",
+        "mase": 0.4275732570919186,
+        "smape": 10.764950689057335,
+        "coverage": 0.7678571428571428,
+        "width": 27.195847613470892
+      },
+      {
+        "model": "AutoARIMA_x",
+        "mase": 0.43801736229407356,
+        "smape": 11.066930605416644,
+        "coverage": 0.8422619047619048,
+        "width": 32.1994177253297
+      },
+      {
+        "model": "AutoETS",
+        "mase": 0.7735836870946655,
+        "smape": 19.393061348300947,
+        "coverage": 0.7708333333333334,
+        "width": 48.239797318768325
+      },
+      {
+        "model": "SeasonalNaive",
+        "mase": 0.9561419737100966,
+        "smape": 23.54958919181489,
+        "coverage": 0.8720238095238094,
+        "width": 82.7862977645829
+      }
+    ],
+    "early_stopping_tree_counts": [
+      {
+        "origin": "2024-09-23",
+        "point_trees": 712,
+        "qlo_trees": 854,
+        "qhi_trees": 809
+      },
+      {
+        "origin": "2024-10-21",
+        "point_trees": 672,
+        "qlo_trees": 1111,
+        "qhi_trees": 772
+      },
+      {
+        "origin": "2024-11-18",
+        "point_trees": 543,
+        "qlo_trees": 630,
+        "qhi_trees": 906
+      },
+      {
+        "origin": "2024-12-16",
+        "point_trees": 485,
+        "qlo_trees": 795,
+        "qhi_trees": 1016
+      }
+    ]
+  },
+  "xgboost_only_1_thread": {
+    "fixed_300_trees": {
+      "mase": 0.427364,
+      "smape": 10.62596,
+      "coverage": 0.77381,
+      "width": 33.671829
+    },
+    "early_stopping": {
+      "mase": 0.420286,
+      "smape": 10.5174,
+      "coverage": 0.776786,
+      "width": 26.705875
+    }
+  },
+  "readme_before_this_change": {
+    "mase": 0.419,
+    "smape": 10.46,
+    "coverage": 0.774,
+    "width": 33.574,
+    "note": "earlier run with n_jobs=4; not reproducible at 2 threads because XGBoost hist results depend on thread count"
+  },
+  "xgboost_summary_2_threads": {
+    "fixed_300_trees": {
+      "model": "XGBoost",
+      "mase": 0.4293652262831645,
+      "smape": 10.710800430985586,
+      "coverage": 0.7797619047619048,
+      "width": 33.53373045580728
+    },
+    "early_stopping": {
+      "model": "XGBoost",
+      "mase": 0.4275732570919186,
+      "smape": 10.764950689057335,
+      "coverage": 0.7678571428571428,
+      "width": 27.195847613470892
+    }
+  }
+}

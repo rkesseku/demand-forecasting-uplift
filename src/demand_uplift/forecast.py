@@ -188,15 +188,44 @@ def forecast_prophet(train: pd.DataFrame, test: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def _xgb(**kw) -> XGBRegressor:
+XGB_TREES = 300  # fixed budget (original setting, used when early stopping is off)
+XGB_MAX_TREES = 2000  # cap when early stopping is on
+XGB_ES_ROUNDS = 50
+
+
+def _xgb(n_estimators: int = XGB_TREES, **kw) -> XGBRegressor:
     return XGBRegressor(
-        n_estimators=300, learning_rate=0.05, max_depth=6, subsample=0.8, colsample_bytree=0.8,
-        min_child_weight=5, tree_method="hist", n_jobs=4, random_state=0, **kw,
+        n_estimators=n_estimators, learning_rate=0.05, max_depth=6, subsample=0.8,
+        colsample_bytree=0.8, min_child_weight=5, tree_method="hist", n_jobs=2, random_state=0,
+        **kw,
     )
 
 
+def _fit_xgb(
+    X: pd.DataFrame, y: np.ndarray, mask: np.ndarray, dates: pd.Series, cut: pd.Timestamp,
+    val_days: int, early_stopping: bool, **kw,
+) -> tuple[XGBRegressor, int]:
+    """Fit on rows ``mask`` (all dated <= ``cut``). Returns (model, n_trees).
+
+    With ``early_stopping`` the number of trees is chosen on a time-ordered validation window,
+    the last ``val_days`` days up to ``cut``: a model is trained on the rows before that window
+    with early stopping on it, then refit on *all* ``mask`` rows with the selected tree count.
+    Only data dated <= ``cut`` is ever used, so nothing from the test window leaks in.
+    """
+    if not early_stopping:
+        return _xgb(**kw).fit(X[mask], y[mask]), XGB_TREES
+    v_cut = cut - pd.Timedelta(days=val_days)
+    fit_m = mask & (dates <= v_cut).to_numpy()
+    val_m = mask & (dates > v_cut).to_numpy()
+    es = _xgb(XGB_MAX_TREES, early_stopping_rounds=XGB_ES_ROUNDS, **kw).fit(
+        X[fit_m], y[fit_m], eval_set=[(X[val_m], y[val_m])], verbose=False)
+    n_trees = int(es.best_iteration) + 1
+    return _xgb(n_trees, **kw).fit(X[mask], y[mask]), n_trees
+
+
 def forecast_xgb(
-    feats: pd.DataFrame, origin: pd.Timestamp, horizon: int, cal_days: int = 56
+    feats: pd.DataFrame, origin: pd.Timestamp, horizon: int, cal_days: int = 56,
+    early_stopping: bool = True, val_days: int = 28, info: dict | None = None,
 ) -> pd.DataFrame:
     """Global XGBoost forecast for dates in (origin, origin+horizon] for *every* series.
 
@@ -204,24 +233,31 @@ def forecast_xgb(
     construction, so building once is safe). Point model trains on rows <= origin. Quantile
     models (10%/90%) train on rows <= origin - cal_days and are conformalised (CQR) on the
     trailing ``cal_days`` window, giving finite-sample-calibrated 80% intervals in log space.
+    With ``early_stopping`` each model's tree count is picked on the ``val_days`` days just
+    before its own training cut-off (see :func:`_fit_xgb`); tree counts go into ``info``.
     """
     cols = feature_columns(horizon)
     need = [c for c in cols if c.startswith("rmean28") or c == f"lag_{horizon + 28}"]
     ok = feats[need].notna().all(axis=1)
     y_log = np.log1p(feats["units"].to_numpy())
     X = feats[cols]
+    dates = feats["date"]
     end = origin + pd.Timedelta(days=horizon)
-    test_mask = ((feats["date"] > origin) & (feats["date"] <= end)).to_numpy()
-    train_mask = ((feats["date"] <= origin) & ok).to_numpy()
+    test_mask = ((dates > origin) & (dates <= end)).to_numpy()
+    train_mask = ((dates <= origin) & ok).to_numpy()
     cal_cut = origin - pd.Timedelta(days=cal_days)
-    q_train = train_mask & (feats["date"] <= cal_cut).to_numpy()
-    cal_mask = train_mask & (feats["date"] > cal_cut).to_numpy()
+    q_train = train_mask & (dates <= cal_cut).to_numpy()
+    cal_mask = train_mask & (dates > cal_cut).to_numpy()
 
-    point = _xgb().fit(X[train_mask], y_log[train_mask])
-    qlo = _xgb(objective="reg:quantileerror", quantile_alpha=ALPHA / 2).fit(
-        X[q_train], y_log[q_train])
-    qhi = _xgb(objective="reg:quantileerror", quantile_alpha=1 - ALPHA / 2).fit(
-        X[q_train], y_log[q_train])
+    fit = {"X": X, "y": y_log, "dates": dates, "val_days": val_days,
+           "early_stopping": early_stopping}
+    point, n_pt = _fit_xgb(mask=train_mask, cut=origin, **fit)
+    qlo, n_lo = _fit_xgb(mask=q_train, cut=cal_cut, objective="reg:quantileerror",
+                         quantile_alpha=ALPHA / 2, **fit)
+    qhi, n_hi = _fit_xgb(mask=q_train, cut=cal_cut, objective="reg:quantileerror",
+                         quantile_alpha=1 - ALPHA / 2, **fit)
+    if info is not None:
+        info.update(point_trees=n_pt, qlo_trees=n_lo, qhi_trees=n_hi)
 
     lo_c, hi_c = qlo.predict(X[cal_mask]), qhi.predict(X[cal_mask])
     yc = y_log[cal_mask]
@@ -250,6 +286,7 @@ class BacktestConfig:
     models: tuple = ("SeasonalNaive", "AutoETS", "AutoARIMA_x", "Prophet", "XGBoost")
     train_window: int = 730  # days of history given to the per-series statistical models
     ensemble: bool = True
+    xgb_early_stopping: bool = True  # False reproduces the original fixed 300-tree XGBoost
 
 
 @dataclass
@@ -258,6 +295,7 @@ class BacktestResult:
     metrics: pd.DataFrame  # one row per model x series x origin
     summary: pd.DataFrame  # one row per model
     config: BacktestConfig = field(default_factory=BacktestConfig)
+    xgb_trees: list = field(default_factory=list)  # tree counts per origin (XGBoost only)
 
 
 def select_series(df: pd.DataFrame, n_series: int) -> list[str]:
@@ -286,6 +324,7 @@ def backtest(df: pd.DataFrame, cfg: BacktestConfig | None = None) -> BacktestRes
     stat_models = [m for m in cfg.models if m in ("SeasonalNaive", "AutoETS", "AutoARIMA_x")]
 
     rows = []
+    xgb_trees: list[dict] = []
     for origin in _origins(df, cfg):
         end = origin + pd.Timedelta(days=cfg.horizon)
         start = origin - pd.Timedelta(days=cfg.train_window)
@@ -299,7 +338,10 @@ def backtest(df: pd.DataFrame, cfg: BacktestConfig | None = None) -> BacktestRes
             if "Prophet" in cfg.models:
                 preds["Prophet"] = forecast_prophet(train, test)
             if "XGBoost" in cfg.models:
-                g = forecast_xgb(feats, origin, cfg.horizon)
+                info: dict = {"origin": str(origin.date())}
+                g = forecast_xgb(feats, origin, cfg.horizon,
+                                 early_stopping=cfg.xgb_early_stopping, info=info)
+                xgb_trees.append(info)
                 preds["XGBoost"] = g[g["series_id"].isin(series)]
         if cfg.ensemble:
             members = [m for m in ("AutoETS", "AutoARIMA_x", "Prophet", "XGBoost") if m in preds]
@@ -340,4 +382,5 @@ def backtest(df: pd.DataFrame, cfg: BacktestConfig | None = None) -> BacktestRes
         .sort_values("mase")
         .reset_index()
     )
-    return BacktestResult(forecasts=fc, metrics=metrics, summary=summary, config=cfg)
+    return BacktestResult(forecasts=fc, metrics=metrics, summary=summary, config=cfg,
+                          xgb_trees=xgb_trees)

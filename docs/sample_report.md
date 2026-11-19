@@ -8,10 +8,10 @@ Rolling origin: 4 origins, step 28 days, horizon 14 days, 6 series. MASE scaled 
 
 | model | MASE | sMAPE (%) | 80% coverage | mean width |
 |---|---|---|---|---|
-| Prophet | 0.377 | 9.493 | 0.789 | 23.689 |
-| Ensemble | 0.404 | 9.902 | 0.866 | 34.419 |
-| XGBoost | 0.419 | 10.460 | 0.774 | 33.574 |
-| AutoARIMA_x | 0.437 | 11.061 | 0.845 | 32.174 |
+| Prophet | 0.377 | 9.493 | 0.783 | 23.612 |
+| Ensemble | 0.409 | 10.026 | 0.875 | 32.812 |
+| XGBoost | 0.428 | 10.765 | 0.768 | 27.196 |
+| AutoARIMA_x | 0.438 | 11.067 | 0.842 | 32.199 |
 | AutoETS | 0.774 | 19.393 | 0.771 | 48.240 |
 | SeasonalNaive | 0.956 | 23.550 | 0.872 | 82.786 |
 
@@ -62,7 +62,7 @@ Best learner by correlation with true CATE: **X-learner**. `calib_slope` is the 
 
 ### DoWhy identification and refutation
 
-Graph: 10 nodes; every observed covariate (store, dow, holiday, cos1, t, sin1, log_price, product) is a common cause of promo and demand. On a 6,000-row subsample the identified backdoor estimand gives 35.480 (propensity-score stratification) and 31.351 (EconML LinearDML via DoWhy).
+Graph: 10 nodes; every observed covariate (log_price, product, t, sin1, cos1, dow, holiday, store) is a common cause of promo and demand. On a 6,000-row subsample the identified backdoor estimand gives 35.480 (propensity-score stratification) and 31.137 (EconML LinearDML via DoWhy).
 
 | refuter | new_effect | p_value | error |
 |---|---|---|---|

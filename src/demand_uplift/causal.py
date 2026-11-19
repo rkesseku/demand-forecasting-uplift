@@ -76,18 +76,32 @@ def _trees(n: int) -> int:
     return max(4, (int(n) // 4) * 4)
 
 
-def _reg(seed: int, iters: int) -> HistGradientBoostingRegressor:
-    return HistGradientBoostingRegressor(
-        max_iter=iters, learning_rate=0.1, max_leaf_nodes=15, min_samples_leaf=30,
-        random_state=seed,
-    )
+# Nuisance budgets. "fixed" is the original setting: at most ``iters`` boosting rounds (sklearn's
+# default early_stopping="auto" still stops earlier on fits with > 10,000 rows). "es" raises the
+# cap to ES_MAX_ITER and always early-stops on a 10% validation split of the *training* fold, i.e.
+# the number of rounds is chosen by held-out nuisance loss, never by the (unknown) treatment effect.
+NUISANCE_MODES = ("fixed", "es")
+ES_MAX_ITER = 1000
 
 
-def _clf(seed: int, iters: int) -> HistGradientBoostingClassifier:
-    return HistGradientBoostingClassifier(
-        max_iter=iters, learning_rate=0.1, max_leaf_nodes=15, min_samples_leaf=30,
-        random_state=seed,
-    )
+def _hgb_kw(iters: int, nuisance: str) -> dict:
+    kw = {"learning_rate": 0.1, "max_leaf_nodes": 15, "min_samples_leaf": 30}
+    if nuisance == "fixed":
+        return {**kw, "max_iter": iters}
+    if nuisance == "es":
+        return {
+            **kw, "max_iter": ES_MAX_ITER, "early_stopping": True, "validation_fraction": 0.1,
+            "n_iter_no_change": 20,
+        }
+    raise ValueError(f"nuisance must be one of {NUISANCE_MODES}, got {nuisance!r}")
+
+
+def _reg(seed: int, iters: int, nuisance: str = "fixed") -> HistGradientBoostingRegressor:
+    return HistGradientBoostingRegressor(random_state=seed, **_hgb_kw(iters, nuisance))
+
+
+def _clf(seed: int, iters: int, nuisance: str = "fixed") -> HistGradientBoostingClassifier:
+    return HistGradientBoostingClassifier(random_state=seed, **_hgb_kw(iters, nuisance))
 
 
 # ------------------------------------------------------------------ simple estimators
@@ -106,16 +120,16 @@ def regression_adjustment(y: np.ndarray, d: np.ndarray, X: pd.DataFrame) -> Esti
 # -------------------------------------------------------------------- AIPW (own code)
 def cross_fit_aipw(
     y: np.ndarray, d: np.ndarray, X: np.ndarray, n_folds: int = 5, seed: int = 0,
-    iters: int = 100, clip: float = 0.02,
+    iters: int = 100, clip: float = 0.02, nuisance: str = "fixed",
 ) -> tuple[Estimate, np.ndarray]:
     """Cross-fitted AIPW. Returns the ATE estimate and per-row influence/DR scores psi_i."""
     n = len(y)
     mu0, mu1, e = np.zeros(n), np.zeros(n), np.zeros(n)
     for tr, te in KFold(n_folds, shuffle=True, random_state=seed).split(X):
         t1, t0 = tr[d[tr] == 1], tr[d[tr] == 0]
-        mu1[te] = _reg(seed, iters).fit(X[t1], y[t1]).predict(X[te])
-        mu0[te] = _reg(seed, iters).fit(X[t0], y[t0]).predict(X[te])
-        e[te] = _clf(seed, iters).fit(X[tr], d[tr]).predict_proba(X[te])[:, 1]
+        mu1[te] = _reg(seed, iters, nuisance).fit(X[t1], y[t1]).predict(X[te])
+        mu0[te] = _reg(seed, iters, nuisance).fit(X[t0], y[t0]).predict(X[te])
+        e[te] = _clf(seed, iters, nuisance).fit(X[tr], d[tr]).predict_proba(X[te])[:, 1]
     e = np.clip(e, clip, 1 - clip)
     psi = mu1 - mu0 + d * (y - mu1) / e - (1 - d) * (y - mu0) / (1 - e)
     ate = psi.mean()
@@ -132,7 +146,7 @@ def _econml_ate(est, X, y, d, name: str, note: str, **fit_kw) -> Estimate:
 
 def econml_estimates(
     y: np.ndarray, d: np.ndarray, X: pd.DataFrame, n_folds: int, seed: int, iters: int,
-    forest_trees: int,
+    forest_trees: int, nuisance: str = "fixed", n_jobs: int = 2,
 ) -> list[Estimate]:
     from econml.dml import CausalForestDML, LinearDML
     from econml.dr import LinearDRLearner
@@ -141,7 +155,7 @@ def econml_estimates(
     out = []
     # Constant-effect partially-linear DML: confounders enter as W only.
     dml = LinearDML(
-        model_y=_reg(seed, iters), model_t=_clf(seed, iters), discrete_treatment=True,
+        model_y=_reg(seed, iters, nuisance), model_t=_clf(seed, iters, nuisance), discrete_treatment=True,
         cv=n_folds, random_state=seed,
     )
     dml.fit(y, d, X=None, W=Xn)
@@ -151,19 +165,19 @@ def econml_estimates(
              "constant effect; targets Var(D|X)-weighted ATE")
     )
     dml_h = LinearDML(
-        model_y=_reg(seed, iters), model_t=_clf(seed, iters), discrete_treatment=True,
+        model_y=_reg(seed, iters, nuisance), model_t=_clf(seed, iters, nuisance), discrete_treatment=True,
         cv=n_folds, random_state=seed,
     )
     out.append(_econml_ate(dml_h, Xn, y, d, "LinearDML-het", "linear CATE in X, averaged"))
     dr = LinearDRLearner(
-        model_propensity=_clf(seed, iters), model_regression=_reg(seed, iters), cv=n_folds,
+        model_propensity=_clf(seed, iters, nuisance), model_regression=_reg(seed, iters, nuisance), cv=n_folds,
         random_state=seed,
     )
     out.append(_econml_ate(dr, Xn, y, d, "DRLearner", "doubly robust, linear final stage"))
     cf = CausalForestDML(
-        model_y=_reg(seed, iters), model_t=_clf(seed, iters), discrete_treatment=True,
+        model_y=_reg(seed, iters, nuisance), model_t=_clf(seed, iters, nuisance), discrete_treatment=True,
         n_estimators=_trees(forest_trees), min_samples_leaf=40, max_samples=0.2, cv=n_folds,
-        random_state=seed, n_jobs=-1,
+        random_state=seed, n_jobs=n_jobs,
     )
     out.append(_econml_ate(cf, Xn, y, d, "CausalForestDML", "honest causal forest, averaged"))
     return out
@@ -181,7 +195,7 @@ def _cate_factories(seed: int, iters: int, forest_trees: int) -> dict:
         "CausalForestDML": lambda: CausalForestDML(
             model_y=_reg(seed, iters), model_t=_clf(seed, iters), discrete_treatment=True,
             n_estimators=_trees(forest_trees), min_samples_leaf=40, max_samples=0.2, cv=3,
-            random_state=seed, n_jobs=-1,
+            random_state=seed, n_jobs=2,
         ),
     }
 
@@ -314,6 +328,109 @@ def dowhy_analysis(df: pd.DataFrame, n: int = 6000, seed: int = 0) -> dict:
     return res
 
 
+# ---------------------------------------------------------------- ATE estimates only
+def ate_estimates(
+    df: pd.DataFrame, n_folds: int = 5, seed: int = 0, iters: int = 100,
+    forest_trees: int = 100, nuisance: str = "fixed", n_jobs: int = 2,
+) -> tuple[pd.DataFrame, np.ndarray]:
+    """All ATE estimators on one panel. Returns the estimate table and the AIPW DR scores."""
+    y = df["units"].to_numpy(dtype=float)
+    d = df["promo"].to_numpy(dtype=int)
+    X = covariates(df)
+    truth = true_effects(df)
+    ests = [naive_difference(y, d), regression_adjustment(y, d, X)]
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ests += econml_estimates(y, d, X, n_folds, seed, iters, forest_trees, nuisance, n_jobs)
+        aipw, psi = cross_fit_aipw(
+            y, d, X.to_numpy(), n_folds=n_folds, seed=seed, iters=iters, nuisance=nuisance
+        )
+    ests.append(aipw)
+    tab = pd.DataFrame([e.__dict__ for e in ests])
+    tab["bias"] = tab["estimate"] - truth["ate"]
+    tab["covers_ate"] = (tab["ci_low"] <= truth["ate"]) & (truth["ate"] <= tab["ci_high"])
+    return tab, psi
+
+
+# ---------------------------------------------------------------- coverage study
+def wilson_interval(k: int, n: int, level: float = 0.95) -> tuple[float, float]:
+    """Wilson score interval for a binomial proportion k/n."""
+    if n == 0:
+        return float("nan"), float("nan")
+    z = stats.norm.ppf(0.5 + level / 2)
+    p = k / n
+    den = 1 + z**2 / n
+    mid = (p + z**2 / (2 * n)) / den
+    half = z * np.sqrt(p * (1 - p) / n + z**2 / (4 * n**2)) / den
+    lo = 0.0 if k == 0 else max(0.0, mid - half)
+    hi = 1.0 if k == n else min(1.0, mid + half)
+    return float(lo), float(hi)
+
+
+def coverage_study(
+    seeds, n_stores: int = 8, n_products: int = 5, n_days: int = 1095, n_folds: int = 5,
+    iters: int = 100, forest_trees: int = 100, nuisance: str = "fixed", n_jobs: int = 2,
+    model_seed: int = 0, callback=None,
+) -> pd.DataFrame:
+    """Re-generate the synthetic panel for every data seed and run every ATE estimator.
+
+    Returns one row per (seed, method) with the estimate, CI, the seed's true ATE and the
+    ``Var(D|X)``-weighted estimand. Nuisance hyperparameters never look at the truth.
+    ``callback(raw_so_far)`` is called after each seed (used for checkpointing).
+    """
+    import time
+
+    from .data import generate
+
+    rows = []
+    for s in seeds:
+        t0 = time.perf_counter()
+        df = generate(n_stores, n_products, n_days, seed=int(s))
+        truth = true_effects(df)
+        tab, _ = ate_estimates(df, n_folds=n_folds, seed=model_seed, iters=iters,
+                               forest_trees=forest_trees, nuisance=nuisance, n_jobs=n_jobs)
+        secs = time.perf_counter() - t0
+        for r in tab.itertuples(index=False):
+            rows.append({
+                "seed": int(s), "nuisance": nuisance, "method": r.method,
+                "estimate": r.estimate, "se": r.se, "ci_low": r.ci_low, "ci_high": r.ci_high,
+                "true_ate": truth["ate"], "true_plr": truth["plr_weighted"], "seconds": secs,
+            })
+        if callback is not None:
+            callback(pd.DataFrame(rows))
+    return pd.DataFrame(rows)
+
+
+def summarize_coverage(raw: pd.DataFrame) -> pd.DataFrame:
+    """Per (nuisance, method): bias, RMSE, empirical 95% CI coverage (+ Wilson CI), CI width.
+
+    ``coverage_ate`` is coverage of each seed's true ATE. ``coverage_plr`` is coverage of the
+    ``Var(D|X)``-weighted effect, the estimand constant-effect LinearDML actually targets.
+    ``sd_err / mean_se`` near 1 means the standard error matches the real spread of the error.
+    """
+    out = []
+    for (nuis, method), g in raw.groupby(["nuisance", "method"], sort=False):
+        err = g["estimate"] - g["true_ate"]
+        cov = (g["ci_low"] <= g["true_ate"]) & (g["true_ate"] <= g["ci_high"])
+        cov_p = (g["ci_low"] <= g["true_plr"]) & (g["true_plr"] <= g["ci_high"])
+        n, k = len(g), int(cov.sum())
+        lo, hi = wilson_interval(k, n)
+        lo_p, hi_p = wilson_interval(int(cov_p.sum()), n)
+        out.append({
+            "nuisance": nuis, "method": method, "n_seeds": n,
+            "mean_bias": float(err.mean()), "rel_bias": float((err / g["true_ate"]).mean()),
+            "rmse": float(np.sqrt(np.mean(err**2))), "sd_err": float(err.std(ddof=1)),
+            "mean_se": float(g["se"].mean()),
+            "se_ratio": float(err.std(ddof=1) / g["se"].mean()),
+            "coverage_ate": k / n, "coverage_ate_lo": lo, "coverage_ate_hi": hi,
+            "coverage_plr": float(cov_p.mean()), "coverage_plr_lo": lo_p,
+            "coverage_plr_hi": hi_p,
+            "mean_width": float((g["ci_high"] - g["ci_low"]).mean()),
+            "mean_seconds_per_seed": float(g["seconds"].mean()),
+        })
+    return pd.DataFrame(out)
+
+
 # ------------------------------------------------------------------------ orchestrator
 @dataclass
 class CausalResults:
@@ -329,23 +446,14 @@ class CausalResults:
 
 def run_causal(
     df: pd.DataFrame, n_folds: int = 5, seed: int = 0, iters: int = 100, forest_trees: int = 100,
-    use_dowhy: bool = True, dowhy_n: int = 6000,
+    use_dowhy: bool = True, dowhy_n: int = 6000, nuisance: str = "fixed",
 ) -> CausalResults:
     y = df["units"].to_numpy(dtype=float)
     d = df["promo"].to_numpy(dtype=int)
-    X = covariates(df)
-    Xn = X.to_numpy()
+    Xn = covariates(df).to_numpy()
     truth = true_effects(df)
-
-    ests = [naive_difference(y, d), regression_adjustment(y, d, X)]
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        ests += econml_estimates(y, d, X, n_folds, seed, iters, forest_trees)
-        aipw, psi = cross_fit_aipw(y, d, Xn, n_folds=n_folds, seed=seed, iters=iters)
-    ests.append(aipw)
-    tab = pd.DataFrame([e.__dict__ for e in ests])
-    tab["bias"] = tab["estimate"] - truth["ate"]
-    tab["covers_ate"] = (tab["ci_low"] <= truth["ate"]) & (truth["ate"] <= tab["ci_high"])
+    tab, psi = ate_estimates(df, n_folds=n_folds, seed=seed, iters=iters,
+                             forest_trees=forest_trees, nuisance=nuisance)
 
     tau_true = df["true_tau"].to_numpy()
     cate = pd.DataFrame({"true_tau": tau_true})
