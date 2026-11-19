@@ -108,15 +108,15 @@ The target is the average treatment effect (ATE): extra units sold per promo day
 ## Forecast accuracy
 
 | Model | MASE | sMAPE (%) | 80% coverage | Mean width |
-|---|---|---|---|---|
-| Prophet | 0.377 | 9.49 | 0.789 | 23.7 |
+|-----------------------------------------|---------|---------------|-------------------|----------------|
+| Prophet | **0.377** | **9.49** | **0.789** | **23.7** |
 | Ensemble | 0.404 | 9.90 | 0.866 | 34.4 |
 | XGBoost | 0.419 | 10.46 | 0.774 | 33.6 |
 | AutoARIMA (with regressors) | 0.437 | 11.06 | 0.845 | 32.2 |
 | AutoETS | 0.774 | 19.39 | 0.771 | 48.2 |
 | SeasonalNaive | 0.956 | 23.55 | 0.872 | 82.8 |
 
-: Seed-42 synthetic data (full report in docs/sample_report.md). Backtest: 4 rolling origins, 14-day horizon, 6 series, nominal 80% intervals. {#tbl-bt}
+: Seed-42 synthetic data (full report in docs/sample_report.md). Backtest: 4 rolling origins, 14-day horizon, 6 series, nominal 80% intervals. Bold marks the best value in each column: lowest error, coverage closest to 0.80 and narrowest interval. {#tbl-bt}
 
 The three models that see the promo and price regressors (Prophet, AutoARIMA, XGBoost) cut error by more than half relative to the seasonal-naive baseline, and by about 45% relative to AutoETS, which cannot use them. With four origins and six series (336 held-out points per model) the ranking among the top three is not statistically conclusive.
 
@@ -130,16 +130,16 @@ As Table 2 and Figure 3 show, the naive contrast overstates the effect by about 
 **An honest note on the confidence intervals.** Six of the seven 95% intervals miss the true value, including those of the best estimators. This is not an arithmetic bug. Those intervals only account for random sampling noise. The remaining error of one to two units comes from the flexible models that predict sales and promotion being imperfect in a finite sample, and the interval formulas do not include that error. Only the causal forest, whose interval is much wider, covers the truth. In practice the intervals should be read as a lower bound on uncertainty. Rows are also treated as independent, whereas real promo data has serial correlation and would need clustered errors.
 
 | Method | Estimate | 95% CI | Bias | CI covers true ATE |
-|---|---|---|---|---|
+|-----------------------------------------|-------------|----------------------|----------|-------------|
 | Naive | 56.83 | [55.48, 58.18] | +32.84 | no |
 | Regression adjustment | 34.69 | [33.95, 35.44] | +10.70 | no |
 | LinearDML (constant effect) | 29.89 | [29.47, 30.31] | +5.90 | no |
-| LinearDML-het | 24.95 | [24.62, 25.28] | +0.96 | no |
+| LinearDML-het | **24.95** | [24.62, 25.28] | **+0.96** | no |
 | DRLearner | 25.95 | [25.59, 26.31] | +1.97 | no |
-| CausalForestDML | 28.09 | [23.71, 32.48] | +4.10 | yes |
+| CausalForestDML | 28.09 | [23.71, 32.48] | +4.10 | **yes** |
 | AIPW (own, cross-fitted) | 25.42 | [25.09, 25.76] | +1.43 | no |
 
-: Causal estimates against the known truth of 23.989. {#tbl-causal}
+: Causal estimates against the known truth of 23.989. Bold marks the estimate closest to the truth and the only interval that covers it. {#tbl-causal}
 
 ![Point estimates and 95% intervals for each method. Red dashed line: true ATE; orange dotted line: the weighted effect constant-effect DML targets.](figures/causal_estimates.png){#fig-causal width=62%}
 
