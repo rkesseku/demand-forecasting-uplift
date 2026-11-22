@@ -27,7 +27,7 @@ src/demand_uplift/
   report.py     Markdown report + matplotlib figures
   cli.py        python -m demand_uplift {generate,backtest,causal,coverage,report}
 tests/          pytest suite (CPU only, tiny synthetic panels)
-docs/results/   multi-seed coverage study and XGBoost early-stopping comparison (JSON + figure)
+docs/results/   multi-seed coverage study (JSON, CSV, figure) and XGBoost early-stopping comparison (JSON)
 ```
 
 **Libraries used.** Forecasting: [statsforecast](https://github.com/Nixtla/statsforecast) (SeasonalNaive, AutoETS, AutoARIMA with exogenous regressors), [Prophet](https://facebook.github.io/prophet/), [XGBoost](https://xgboost.readthedocs.io/). Causal: [DoWhy](https://github.com/py-why/dowhy) (explicit causal graph, backdoor identification, estimation, refutation tests) and [EconML](https://github.com/py-why/EconML) (`LinearDML`, `CausalForestDML`, `LinearDRLearner`, `TLearner`, `XLearner`). Hand-written code is kept only where it adds value: the naive baseline, a small cross-fitted AIPW estimator (used as an independent cross-check and to produce the doubly-robust scores behind the uplift and calibration diagnostics), and the backtest/metrics/report plumbing.
